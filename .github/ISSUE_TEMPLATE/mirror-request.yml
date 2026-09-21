@@ -1,0 +1,28 @@
+name: mirror-request
+description: Mirror a Docker image to GHCR
+title: "[mirror] "
+labels: ["mirror-request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 🪞 Mirror Request
+        Provide a Docker image reference and it will be mirrored to GHCR with all architectures preserved.
+
+  - type: input
+    id: source
+    attributes:
+      label: Source image
+      description: "The full image reference to mirror. Supports Docker Hub, GHCR, quay.io, etc."
+      placeholder: "postgres:18.6"
+    validations:
+      required: true
+
+  - type: input
+    id: tag
+    attributes:
+      label: Image tag (optional)
+      description: "Custom tag for the mirrored image. Defaults to a sanitized version of the source (e.g., postgres:18.6 → postgres-18.6)."
+      placeholder: "postgres-18.6"
+    validations:
+      required: false

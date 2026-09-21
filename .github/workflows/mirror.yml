@@ -1,0 +1,166 @@
+name: Mirror Image to GHCR
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  contents: read
+  packages: write
+  issues: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    if: contains(github.event.issue.labels.*.name, 'mirror-request')
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract image info from issue
+        id: extract
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+
+          # Parse source image
+          SOURCE=$(echo "$ISSUE_BODY" | awk '/^### Source image/{found=1; next} found && /^[[:space:]]*$/{next} found && /^[^#]/{print; exit}' | tr -d '[:space:]')
+
+          if [ -z "$SOURCE" ]; then
+            echo "::error::No source image found in issue body."
+            exit 1
+          fi
+
+          # Normalize: add docker.io prefix for short names
+          if [[ "$SOURCE" != *"/"* ]]; then
+            SOURCE_FULL="docker.io/library/$SOURCE"
+          elif [[ "$SOURCE" != *"."* ]]; then
+            SOURCE_FULL="docker.io/$SOURCE"
+          else
+            SOURCE_FULL="$SOURCE"
+          fi
+
+          # Parse optional custom tag
+          TAG=$(echo "$ISSUE_BODY" | awk '/^### Image tag/{found=1; next} found && /^[[:space:]]*$/{next} found && /^[^#]/{print; exit}' | tr -d '[:space:]')
+          if [ -z "$TAG" ] || [ "$TAG" = "_Noresponse_" ]; then
+            # Default: sanitize source (postgres:18.6 → postgres-18.6)
+            TAG=$(echo "$SOURCE" | sed 's|.*/||' | tr ':/' '-')
+          fi
+
+          FILENAME="${TAG}.tar"
+
+          echo "source=$SOURCE" >> "$GITHUB_OUTPUT"
+          echo "source_full=$SOURCE_FULL" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "filename=$FILENAME" >> "$GITHUB_OUTPUT"
+          echo "### 🪞 Mirror Info" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Source:** \`$SOURCE\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Resolved:** \`$SOURCE_FULL\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tag:** \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Filename:** \`$FILENAME\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Add processing label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue edit "${{ github.event.issue.number }}" \
+            --repo "${{ github.repository }}" \
+            --add-label "processing"
+
+      - name: Save image as OCI archive
+        run: |
+          set -euo pipefail
+          echo "Saving: ${{ steps.extract.outputs.source_full }}"
+          skopeo copy --all \
+            "docker://${{ steps.extract.outputs.source_full }}" \
+            "oci-archive:download"
+          echo "### 📥 Image Saved" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Size:** $(du -h download | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **SHA256:** \`$(sha256sum download | cut -d' ' -f1)\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Lowercase image name
+        run: echo "IMAGE_NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            FILENAME=${{ steps.extract.outputs.filename }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.extract.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=${{ github.event.repository.html_url }}
+            org.opencontainers.image.description=Mirrored from ${{ steps.extract.outputs.source }}
+            dev.packet.source-image=${{ steps.extract.outputs.source }}
+            dev.packet.filename=${{ steps.extract.outputs.filename }}
+
+      - name: Comment result on issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.extract.outputs.tag }}"
+          gh issue comment "${{ github.event.issue.number }}" \
+            --repo "${{ github.repository }}" \
+            --body "## 🪞 Image Mirrored
+
+          \`\`\`
+          docker pull $IMAGE
+          \`\`\`
+
+          **Source:** \`${{ steps.extract.outputs.source }}\`
+          **File:** \`/file/${{ steps.extract.outputs.filename }}\`
+          **SHA256:** \`$(sha256sum download | cut -d' ' -f1)\`
+
+          Extract and load:
+          \`\`\`bash
+          docker create --name tmp $IMAGE
+          docker cp tmp:/file/${{ steps.extract.outputs.filename }} .
+          docker rm tmp
+          docker load < ${{ steps.extract.outputs.filename }}
+          \`\`\`"
+
+      - name: Update labels on success
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue edit "${{ github.event.issue.number }}" \
+            --repo "${{ github.repository }}" \
+            --remove-label "processing" \
+            --add-label "published"
+
+      - name: Handle failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue comment "${{ github.event.issue.number }}" \
+            --repo "${{ github.repository }}" \
+            --body "## ❌ Mirror Failed
+
+          The workflow failed to mirror the requested image.
+          Please check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."
+          gh issue edit "${{ github.event.issue.number }}" \
+            --repo "${{ github.repository }}" \
+            --remove-label "processing" \
+            --add-label "failed"
