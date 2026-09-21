@@ -111,8 +111,6 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             dev.packet.source-url=${{ steps.extract.outputs.url }}
             dev.packet.filename=${{ steps.extract.outputs.filename }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Comment result on issue
         env:
