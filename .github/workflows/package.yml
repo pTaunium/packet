@@ -48,6 +48,12 @@ jobs:
             TAG="$ISSUE_NUMBER"
           fi
 
+          # Parse optional SHA256 checksum
+          SHA256=$(echo "$ISSUE_BODY" | awk '/^### SHA256 checksum/{found=1; next} found && /^[[:space:]]*$/{next} found && /^[^#]/{print; exit}' | tr -d '[:space:]')
+          if [ "$SHA256" = "_Noresponse_" ]; then
+            SHA256=""
+          fi
+
           # Extract filename from URL
           FILENAME=$(basename "$(echo "$URL" | cut -d'?' -f1 | cut -d'#' -f1)")
           if [ -z "$FILENAME" ] || [ "$FILENAME" = "/" ]; then
@@ -57,10 +63,14 @@ jobs:
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           echo "filename=$FILENAME" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
           echo "### 📦 Extracted Info" >> "$GITHUB_STEP_SUMMARY"
           echo "- **URL:** \`$URL\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Filename:** \`$FILENAME\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Tag:** \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$SHA256" ]; then
+            echo "- **Expected SHA256:** \`$SHA256\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Add processing label
         env:
@@ -81,7 +91,24 @@ jobs:
             "${{ steps.extract.outputs.url }}"
           echo "### 📥 Download Complete" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Size:** $(du -h download | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **SHA256:** $(sha256sum download | cut -d' ' -f1)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **SHA256:** \`$(sha256sum download | cut -d' ' -f1)\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify SHA256 checksum
+        if: steps.extract.outputs.sha256 != ''
+        run: |
+          set -euo pipefail
+          EXPECTED="${{ steps.extract.outputs.sha256 }}"
+          ACTUAL=$(sha256sum download | cut -d' ' -f1)
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::SHA256 mismatch! Expected: $EXPECTED, Got: $ACTUAL"
+            echo "### ❌ Checksum Verification Failed" >> "$GITHUB_STEP_SUMMARY"
+            echo "| | Hash |" >> "$GITHUB_STEP_SUMMARY"
+            echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+            echo "| **Expected** | \`$EXPECTED\` |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| **Actual** | \`$ACTUAL\` |" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "### ✅ Checksum Verified" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Lowercase image name
         run: echo "IMAGE_NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"

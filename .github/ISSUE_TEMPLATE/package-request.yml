@@ -26,3 +26,12 @@ body:
       placeholder: "my-tool-v1.0.0"
     validations:
       required: false
+
+  - type: input
+    id: sha256
+    attributes:
+      label: SHA256 checksum (optional)
+      description: Expected SHA256 hash of the downloaded file. The build will fail if it doesn't match.
+      placeholder: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    validations:
+      required: false
