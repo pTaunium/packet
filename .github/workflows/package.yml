@@ -30,7 +30,7 @@ jobs:
 
           # Parse URL from issue form (field: "Download URL")
           # Issue forms render as: ### Download URL\n\n<value>
-          URL=$(echo "$ISSUE_BODY" | sed -n '/### Download URL/{n;/^$/d;n;p;}' | tr -d '[:space:]')
+          URL=$(echo "$ISSUE_BODY" | awk '/^### Download URL/{found=1; next} found && /^[[:space:]]*$/{next} found && /^[^#]/{print; exit}' | tr -d '[:space:]')
 
           # Fallback: grab first http(s) URL from body
           if [ -z "$URL" ]; then
@@ -43,8 +43,8 @@ jobs:
           fi
 
           # Parse optional custom tag
-          TAG=$(echo "$ISSUE_BODY" | sed -n '/### Image tag/{n;/^$/d;n;p;}' | tr -d '[:space:]')
-          if [ -z "$TAG" ] || [ "$TAG" = "_No response_" ]; then
+          TAG=$(echo "$ISSUE_BODY" | awk '/^### Image tag/{found=1; next} found && /^[[:space:]]*$/{next} found && /^[^#]/{print; exit}' | tr -d '[:space:]')
+          if [ -z "$TAG" ] || [ "$TAG" = "_Noresponse_" ]; then
             TAG="$ISSUE_NUMBER"
           fi
 
