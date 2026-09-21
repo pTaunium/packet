@@ -1,5 +1,5 @@
 name: package-request
-description: Submit a URL to package into a Docker image on GHCR
+description: Submit one or more URLs to package into a Docker image on GHCR
 title: "[package] "
 labels: ["package-request"]
 body:
@@ -7,14 +7,16 @@ body:
     attributes:
       value: |
         ## 📦 Package Request
-        Provide a URL and the file will be downloaded and packaged into a minimal Docker image on GHCR.
+        Provide one or more URLs and the files will be downloaded and packaged into a minimal Docker image on GHCR.
 
-  - type: input
-    id: url
+  - type: textarea
+    id: urls
     attributes:
-      label: Download URL
-      description: The HTTP(S) URL of the file to package.
-      placeholder: "https://github.com/owner/repo/releases/download/v1.0.0/binary-linux-amd64"
+      label: Download URLs
+      description: "One or more HTTP(S) URLs to package (one URL per line)."
+      placeholder: |
+        https://github.com/owner/repo/releases/download/v1.0.0/file1.tar.gz
+        https://github.com/owner/repo/releases/download/v1.0.0/file2.bin
     validations:
       required: true
 
@@ -23,15 +25,16 @@ body:
     attributes:
       label: Image tag (optional)
       description: Custom tag for the image. Defaults to the issue number if left blank.
-      placeholder: "my-tool-v1.0.0"
+      placeholder: "my-bundle-v1.0.0"
     validations:
       required: false
 
-  - type: input
+  - type: textarea
     id: sha256
     attributes:
-      label: SHA256 checksum (optional)
-      description: Expected SHA256 hash of the downloaded file. The build will fail if it doesn't match.
-      placeholder: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      label: SHA256 checksums (optional)
+      description: "Optional SHA256 hashes to verify. You can provide hashes (one per line, in the same order as URLs) or standard checksum lines like '<hash>  <filename>'."
+      placeholder: |
+        e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
     validations:
       required: false

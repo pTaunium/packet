@@ -75,13 +75,14 @@ jobs:
       - name: Save image as OCI archive
         run: |
           set -euo pipefail
+          mkdir -p downloads
           echo "Saving: ${{ steps.extract.outputs.source_full }}"
           skopeo copy --all \
             "docker://${{ steps.extract.outputs.source_full }}" \
-            "oci-archive:download"
+            "oci-archive:downloads/${{ steps.extract.outputs.filename }}"
           echo "### 📥 Image Saved" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Size:** $(du -h download | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **SHA256:** \`$(sha256sum download | cut -d' ' -f1)\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Size:** $(du -h "downloads/${{ steps.extract.outputs.filename }}" | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **SHA256:** \`$(sha256sum "downloads/${{ steps.extract.outputs.filename }}" | cut -d' ' -f1)\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Lowercase image name
         run: echo "IMAGE_NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
@@ -105,8 +106,6 @@ jobs:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
-          build-args: |
-            FILENAME=${{ steps.extract.outputs.filename }}
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.extract.outputs.tag }}
           labels: |
@@ -120,6 +119,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.extract.outputs.tag }}"
+          FILE_SHA256=$(sha256sum "downloads/${{ steps.extract.outputs.filename }}" | cut -d' ' -f1)
           gh issue comment "${{ github.event.issue.number }}" \
             --repo "${{ github.repository }}" \
             --body "## 🪞 Image Mirrored
@@ -130,7 +130,7 @@ jobs:
 
           **Source:** \`${{ steps.extract.outputs.source }}\`
           **File:** \`/file/${{ steps.extract.outputs.filename }}\`
-          **SHA256:** \`$(sha256sum download | cut -d' ' -f1)\`
+          **SHA256:** \`$FILE_SHA256\`
 
           Extract and load:
           \`\`\`bash

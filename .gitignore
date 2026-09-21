@@ -1,5 +1,8 @@
 # Downloaded files
 download
+downloads/
+manifest.json
+tmp*/
 
 # OS
 .DS_Store

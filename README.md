@@ -4,11 +4,11 @@ Package files and mirror Docker images to GHCR — just open an issue.
 
 ## Features
 
-### 📦 Package a file from URL
+### 📦 Package files from URLs
 
 1. Open an issue → **Package Request**
-2. Fill in the **Download URL**, optional **tag** and **SHA256 checksum**
-3. The file is packaged into a minimal `scratch` Docker image and pushed to GHCR
+2. Fill in one or more **Download URLs** (one per line), optional **tag** and **SHA256 checksums**
+3. All files are downloaded, verified, packaged into a minimal `scratch` Docker image (`/file/...`), and pushed to GHCR
 
 ### 🪞 Mirror a Docker image
 
@@ -22,11 +22,11 @@ Both templates will comment back on the issue with the `docker pull` command whe
 
 **Package Request:**
 
-| Field               | Required | Description                            |
-| ------------------- | -------- | -------------------------------------- |
-| **Download URL**    | ✅       | The HTTP(S) URL of the file to package |
-| **Image tag**       | ❌       | Custom tag (defaults to issue number)  |
-| **SHA256 checksum** | ❌       | Verify download integrity              |
+| Field                | Required | Description                                                   |
+| -------------------- | -------- | ------------------------------------------------------------- |
+| **Download URLs**    | ✅       | One or more HTTP(S) URLs (one per line)                       |
+| **Image tag**        | ❌       | Custom tag (defaults to issue number)                         |
+| **SHA256 checksums** | ❌       | Expected hashes (one per line or standard `sha256sum` format) |
 
 **Mirror Request:**
 

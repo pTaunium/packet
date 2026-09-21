@@ -1,4 +1,3 @@
 FROM scratch
-ARG FILENAME=file
-COPY download /file/${FILENAME}
+COPY downloads/ /file/
 CMD ["/dev/null"]

@@ -20,57 +20,100 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract URL from issue
-        id: extract
+      - name: Parse issue inputs
+        id: parse
         env:
           ISSUE_BODY: ${{ github.event.issue.body }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
-          set -euo pipefail
+          python3 - << 'EOF'
+          import os, sys, re, json, urllib.parse
 
-          # Parse URL from issue form (field: "Download URL")
-          # Issue forms render as: ### Download URL\n\n<value>
-          URL=$(echo "$ISSUE_BODY" | awk '/^### Download URL/{found=1; next} found && /^[[:space:]]*$/{next} found && /^[^#]/{print; exit}' | tr -d '[:space:]')
+          issue_body = os.environ.get("ISSUE_BODY", "")
+          issue_number = os.environ.get("ISSUE_NUMBER", "")
 
-          # Fallback: grab first http(s) URL from body
-          if [ -z "$URL" ]; then
-            URL=$(echo "$ISSUE_BODY" | grep -oP 'https?://[^\s\)\]>"'"'"']+' | head -1 || true)
-          fi
+          def get_section(name):
+              lines = issue_body.splitlines()
+              found = False
+              content = []
+              for line in lines:
+                  if re.match(rf"^###\s+{re.escape(name)}", line):
+                      found = True
+                      continue
+                  elif found and line.startswith("### "):
+                      break
+                  elif found:
+                      content.append(line)
+              text = "\n".join(content).strip()
+              if text in ("_No response_", "_Noresponse_"):
+                  return ""
+              return text
 
-          if [ -z "$URL" ]; then
-            echo "::error::No URL found in issue body."
-            exit 1
-          fi
+          # URLs: support both "Download URLs" and legacy "Download URL"
+          raw_urls = get_section("Download URLs") or get_section("Download URL")
+          urls = re.findall(r"https?://[^\s)\]>\"']+", raw_urls)
 
-          # Parse optional custom tag
-          TAG=$(echo "$ISSUE_BODY" | awk '/^### Image tag/{found=1; next} found && /^[[:space:]]*$/{next} found && /^[^#]/{print; exit}' | tr -d '[:space:]')
-          if [ -z "$TAG" ] || [ "$TAG" = "_Noresponse_" ]; then
-            TAG="$ISSUE_NUMBER"
-          fi
+          if not urls:
+              print("::error::No valid HTTP(S) URL found in issue body.")
+              sys.exit(1)
 
-          # Parse optional SHA256 checksum
-          SHA256=$(echo "$ISSUE_BODY" | awk '/^### SHA256 checksum/{found=1; next} found && /^[[:space:]]*$/{next} found && /^[^#]/{print; exit}' | tr -d '[:space:]')
-          if [ "$SHA256" = "_Noresponse_" ]; then
-            SHA256=""
-          fi
+          # Tag
+          raw_tag = get_section("Image tag")
+          tag = raw_tag.strip() if raw_tag else issue_number
 
-          # Extract filename from URL
-          FILENAME=$(basename "$(echo "$URL" | cut -d'?' -f1 | cut -d'#' -f1)")
-          if [ -z "$FILENAME" ] || [ "$FILENAME" = "/" ]; then
-            FILENAME="file"
-          fi
+          # Checksums: support both "SHA256 checksums" and legacy "SHA256 checksum"
+          raw_sha = get_section("SHA256 checksums") or get_section("SHA256 checksum")
 
-          echo "url=$URL" >> "$GITHUB_OUTPUT"
-          echo "filename=$FILENAME" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
-          echo "### 📦 Extracted Info" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **URL:** \`$URL\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Filename:** \`$FILENAME\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Tag:** \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
-          if [ -n "$SHA256" ]; then
-            echo "- **Expected SHA256:** \`$SHA256\`" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          # Build mapping of files to download
+          items = []
+          used_names = {}
+          for u in urls:
+              path = urllib.parse.urlparse(u).path
+              fname = os.path.basename(path) or "file"
+              if fname in used_names:
+                  used_names[fname] += 1
+                  name, ext = os.path.splitext(fname)
+                  fname = f"{name}_{used_names[fname]}{ext}"
+              else:
+                  used_names[fname] = 1
+              items.append({"url": u, "filename": fname})
+
+          # Parse checksums: filename -> hash OR ordered hashes
+          by_fn = {}
+          by_ord = []
+          for line in raw_sha.splitlines():
+              line = line.strip()
+              if not line or line.startswith("#"):
+                  continue
+              m_fn = re.match(r"^([a-fA-F0-9]{64})\s+[*]?(\S+)$", line)
+              if m_fn:
+                  by_fn[m_fn.group(2)] = m_fn.group(1).lower()
+              else:
+                  m_hash = re.match(r"^([a-fA-F0-9]{64})$", line)
+                  if m_hash:
+                      by_ord.append(m_hash.group(1).lower())
+
+          for idx, item in enumerate(items):
+              expected = by_fn.get(item["filename"])
+              if not expected and idx < len(by_ord):
+                  expected = by_ord[idx]
+              item["expected_sha256"] = expected or ""
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"tag={tag}\n")
+              f.write(f"count={len(items)}\n")
+
+          with open("manifest.json", "w") as f:
+              json.dump(items, f, indent=2)
+
+          summary = ["### 📦 Extracted Request Info", f"- **Tag:** `{tag}`", f"- **Files count:** `{len(items)}`", "", "| Filename | Expected SHA256 | URL |", "|---|---|---|"]
+          for item in items:
+              sha_disp = f"`{item['expected_sha256'][:12]}...`" if item['expected_sha256'] else "*(none)*"
+              summary.append(f"| `{item['filename']}` | {sha_disp} | {item['url']} |")
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("\n".join(summary) + "\n\n")
+          EOF
 
       - name: Add processing label
         env:
@@ -80,35 +123,74 @@ jobs:
             --repo "${{ github.repository }}" \
             --add-label "processing"
 
-      - name: Download file
+      - name: Download and verify files
         run: |
-          set -euo pipefail
-          echo "Downloading: ${{ steps.extract.outputs.url }}"
-          curl -fSL \
-            --retry 3 \
-            --retry-delay 5 \
-            -o download \
-            "${{ steps.extract.outputs.url }}"
-          echo "### 📥 Download Complete" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Size:** $(du -h download | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **SHA256:** \`$(sha256sum download | cut -d' ' -f1)\`" >> "$GITHUB_STEP_SUMMARY"
+          python3 - << 'EOF'
+          import os, sys, json, hashlib, subprocess
 
-      - name: Verify SHA256 checksum
-        if: steps.extract.outputs.sha256 != ''
-        run: |
-          set -euo pipefail
-          EXPECTED="${{ steps.extract.outputs.sha256 }}"
-          ACTUAL=$(sha256sum download | cut -d' ' -f1)
-          if [ "$ACTUAL" != "$EXPECTED" ]; then
-            echo "::error::SHA256 mismatch! Expected: $EXPECTED, Got: $ACTUAL"
-            echo "### ❌ Checksum Verification Failed" >> "$GITHUB_STEP_SUMMARY"
-            echo "| | Hash |" >> "$GITHUB_STEP_SUMMARY"
-            echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-            echo "| **Expected** | \`$EXPECTED\` |" >> "$GITHUB_STEP_SUMMARY"
-            echo "| **Actual** | \`$ACTUAL\` |" >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-          echo "### ✅ Checksum Verified" >> "$GITHUB_STEP_SUMMARY"
+          with open("manifest.json") as f:
+              items = json.load(f)
+
+          os.makedirs("downloads", exist_ok=True)
+          results = []
+          failures = []
+
+          for item in items:
+              url = item["url"]
+              fname = item["filename"]
+              target_path = os.path.join("downloads", fname)
+              print(f"Downloading: {url} -> {target_path}")
+
+              cmd = ["curl", "-fSL", "--retry", "3", "--retry-delay", "5", "-o", target_path, url]
+              res = subprocess.run(cmd)
+              if res.returncode != 0:
+                  print(f"::error::Failed to download {url}")
+                  sys.exit(1)
+
+              with open(target_path, "rb") as f:
+                  actual_sha256 = hashlib.sha256(f.read()).hexdigest()
+
+              size_bytes = os.path.getsize(target_path)
+              if size_bytes >= 1024 * 1024:
+                  size_disp = f"{size_bytes / (1024*1024):.1f} MB"
+              elif size_bytes >= 1024:
+                  size_disp = f"{size_bytes / 1024:.1f} KB"
+              else:
+                  size_disp = f"{size_bytes} B"
+
+              expected = item.get("expected_sha256", "")
+              if expected and actual_sha256.lower() != expected.lower():
+                  failures.append({
+                      "filename": fname,
+                      "expected": expected,
+                      "actual": actual_sha256
+                  })
+
+              item["actual_sha256"] = actual_sha256
+              item["size"] = size_disp
+              results.append(item)
+
+          with open("manifest.json", "w") as f:
+              json.dump(results, f, indent=2)
+
+          # Summary output
+          lines = ["### 📥 Download Results", "| Filename | Size | SHA256 | Status |", "|---|---|---|---|"]
+          for r in results:
+              expected = r.get("expected_sha256")
+              if expected:
+                  status = "✅ Verified" if r["actual_sha256"] == expected else "❌ Mismatch"
+              else:
+                  status = "ℹ️ No checksum"
+              lines.append(f"| `{r['filename']}` | {r['size']} | `{r['actual_sha256']}` | {status} |")
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("\n".join(lines) + "\n\n")
+
+          if failures:
+              for fail in failures:
+                  print(f"::error::SHA256 mismatch for {fail['filename']}! Expected: {fail['expected']}, Got: {fail['actual']}")
+              sys.exit(1)
+          EOF
 
       - name: Lowercase image name
         run: echo "IMAGE_NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
@@ -132,40 +214,57 @@ jobs:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
-          build-args: |
-            FILENAME=${{ steps.extract.outputs.filename }}
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.extract.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.parse.outputs.tag }}
           labels: |
             org.opencontainers.image.source=${{ github.event.repository.html_url }}
-            org.opencontainers.image.description=Packaged from ${{ steps.extract.outputs.url }}
+            org.opencontainers.image.description=Packaged ${{ steps.parse.outputs.count }} file(s)
             org.opencontainers.image.revision=${{ github.sha }}
-            dev.packet.source-url=${{ steps.extract.outputs.url }}
-            dev.packet.filename=${{ steps.extract.outputs.filename }}
 
       - name: Comment result on issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.extract.outputs.tag }}"
-          gh issue comment "${{ github.event.issue.number }}" \
-            --repo "${{ github.repository }}" \
-            --body "## 🐳 Image Published
+          python3 - << 'EOF'
+          import os, json, subprocess
 
-          \`\`\`
-          docker pull $IMAGE
-          \`\`\`
+          with open("manifest.json") as f:
+              items = json.load(f)
 
-          **Source:** \`${{ steps.extract.outputs.url }}\`
-          **File:** \`/file/${{ steps.extract.outputs.filename }}\`
-          **SHA256:** \`$(sha256sum download | cut -d' ' -f1)\`
+          registry = os.environ["REGISTRY"]
+          image_name = os.environ["IMAGE_NAME"]
+          tag = "${{ steps.parse.outputs.tag }}"
+          image = f"{registry}/{image_name}:{tag}"
+          issue_number = "${{ github.event.issue.number }}"
+          repo = "${{ github.repository }}"
 
-          Extract files:
-          \`\`\`bash
-          docker create --name tmp $IMAGE
-          docker cp tmp:/file/ ./output/
-          docker rm tmp
-          \`\`\`"
+          body_lines = [
+              "## 🐳 Image Published",
+              "",
+              "```",
+              f"docker pull {image}",
+              "```",
+              "",
+              "### Packaged Files:",
+              "| Filename | Size | SHA256 |",
+              "|---|---|---|",
+          ]
+          for it in items:
+              body_lines.append(f"| `{it['filename']}` | {it['size']} | `{it['actual_sha256']}` |")
+
+          body_lines.extend([
+              "",
+              "Extract all files:",
+              "```bash",
+              f"docker create --name tmp {image}",
+              "docker cp tmp:/file/ ./output/",
+              "docker rm tmp",
+              "```"
+          ])
+
+          comment_body = "\n".join(body_lines)
+          subprocess.run(["gh", "issue", "comment", issue_number, "--repo", repo, "--body", comment_body], check=True)
+          EOF
 
       - name: Update labels on success
         env:
@@ -185,7 +284,7 @@ jobs:
             --repo "${{ github.repository }}" \
             --body "## ❌ Package Failed
 
-          The workflow failed to package the requested URL.
+          The workflow failed to package the requested URLs.
           Please check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."
           gh issue edit "${{ github.event.issue.number }}" \
             --repo "${{ github.repository }}" \
