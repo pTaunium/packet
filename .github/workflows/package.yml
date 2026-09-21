@@ -1,0 +1,164 @@
+name: Package URL to GHCR
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  contents: read
+  packages: write
+  issues: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    if: contains(github.event.issue.labels.*.name, 'package-request')
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract URL from issue
+        id: extract
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+
+          # Parse URL from issue form (field: "Download URL")
+          # Issue forms render as: ### Download URL\n\n<value>
+          URL=$(echo "$ISSUE_BODY" | sed -n '/### Download URL/{n;/^$/d;n;p;}' | tr -d '[:space:]')
+
+          # Fallback: grab first http(s) URL from body
+          if [ -z "$URL" ]; then
+            URL=$(echo "$ISSUE_BODY" | grep -oP 'https?://[^\s\)\]>"'"'"']+' | head -1 || true)
+          fi
+
+          if [ -z "$URL" ]; then
+            echo "::error::No URL found in issue body."
+            exit 1
+          fi
+
+          # Parse optional custom tag
+          TAG=$(echo "$ISSUE_BODY" | sed -n '/### Image tag/{n;/^$/d;n;p;}' | tr -d '[:space:]')
+          if [ -z "$TAG" ] || [ "$TAG" = "_No response_" ]; then
+            TAG="$ISSUE_NUMBER"
+          fi
+
+          # Extract filename from URL
+          FILENAME=$(basename "$(echo "$URL" | cut -d'?' -f1 | cut -d'#' -f1)")
+          if [ -z "$FILENAME" ] || [ "$FILENAME" = "/" ]; then
+            FILENAME="file"
+          fi
+
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "filename=$FILENAME" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "### 📦 Extracted Info" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **URL:** \`$URL\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Filename:** \`$FILENAME\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tag:** \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Add processing label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue edit "${{ github.event.issue.number }}" \
+            --repo "${{ github.repository }}" \
+            --add-label "processing"
+
+      - name: Download file
+        run: |
+          set -euo pipefail
+          echo "Downloading: ${{ steps.extract.outputs.url }}"
+          curl -fSL \
+            --retry 3 \
+            --retry-delay 5 \
+            -o download \
+            "${{ steps.extract.outputs.url }}"
+          echo "### 📥 Download Complete" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Size:** $(du -h download | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **SHA256:** $(sha256sum download | cut -d' ' -f1)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Lowercase image name
+        run: echo "IMAGE_NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: |
+            FILENAME=${{ steps.extract.outputs.filename }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.extract.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=${{ github.event.repository.html_url }}
+            org.opencontainers.image.description=Packaged from ${{ steps.extract.outputs.url }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            dev.packet.source-url=${{ steps.extract.outputs.url }}
+            dev.packet.filename=${{ steps.extract.outputs.filename }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Comment result on issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.extract.outputs.tag }}"
+          gh issue comment "${{ github.event.issue.number }}" \
+            --repo "${{ github.repository }}" \
+            --body "## 🐳 Image Published
+
+          \`\`\`
+          docker pull $IMAGE
+          \`\`\`
+
+          **Source:** \`${{ steps.extract.outputs.url }}\`
+          **File:** \`/file/${{ steps.extract.outputs.filename }}\`
+          **SHA256:** \`$(sha256sum download | cut -d' ' -f1)\`
+
+          Extract files:
+          \`\`\`bash
+          docker create --name tmp $IMAGE
+          docker cp tmp:/file/ ./output/
+          docker rm tmp
+          \`\`\`"
+
+      - name: Update labels on success
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue edit "${{ github.event.issue.number }}" \
+            --repo "${{ github.repository }}" \
+            --remove-label "processing" \
+            --add-label "published"
+
+      - name: Handle failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue comment "${{ github.event.issue.number }}" \
+            --repo "${{ github.repository }}" \
+            --body "## ❌ Package Failed
+
+          The workflow failed to package the requested URL.
+          Please check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."
+          gh issue edit "${{ github.event.issue.number }}" \
+            --repo "${{ github.repository }}" \
+            --remove-label "processing" \
+            --add-label "failed"

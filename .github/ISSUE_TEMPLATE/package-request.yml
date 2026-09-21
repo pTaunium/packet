@@ -1,0 +1,28 @@
+name: package-request
+description: Submit a URL to package into a Docker image on GHCR
+title: "[package] "
+labels: ["package-request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 📦 Package Request
+        Provide a URL and the file will be downloaded and packaged into a minimal Docker image on GHCR.
+
+  - type: input
+    id: url
+    attributes:
+      label: Download URL
+      description: The HTTP(S) URL of the file to package.
+      placeholder: "https://github.com/owner/repo/releases/download/v1.0.0/binary-linux-amd64"
+    validations:
+      required: true
+
+  - type: input
+    id: tag
+    attributes:
+      label: Image tag (optional)
+      description: Custom tag for the image. Defaults to the issue number if left blank.
+      placeholder: "my-tool-v1.0.0"
+    validations:
+      required: false
